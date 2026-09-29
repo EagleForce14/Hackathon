@@ -54,4 +54,31 @@ def load_dataset(data_dir: str | Path | None = None) -> tuple[pd.DataFrame, pd.S
 
         data_dir = PROJECT_ROOT / "data"
     df = load_raw(data_dir)
-    return df.drop(columns=[TARGET_COL]), df[TARGET_COL]
+    return df.drop(columns=[TARGET_COL]), df[TARGET_COL]  # type: ignore[return-value]
+
+
+def save_predictions(
+    predictions: pd.DataFrame | pd.Series,
+    output_path: str | Path,
+) -> Path:
+    """Save model predictions to a CSV file.
+
+    Parameters
+    ----------
+    predictions : pandas.DataFrame or pandas.Series
+        Predictions to export. A Series is saved with its index and values;
+        a DataFrame is saved as-is.
+    output_path : str or Path
+        Destination file path (e.g. ``"outputs/predictions.csv"``).
+
+    Returns
+    -------
+    Path
+        The resolved path where the file was written.
+    """
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if isinstance(predictions, pd.Series):
+        predictions = predictions.rename("prediction")
+    predictions.to_csv(output_path, index=True)
+    return output_path
