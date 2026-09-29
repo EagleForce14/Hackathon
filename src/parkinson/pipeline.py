@@ -6,11 +6,12 @@ Builds a skrub DataOps graph that:
    (keeping ``patient_id`` for grouped CV).
 3. Optionally computes per-patient aggregate features (experiment 03+).
 4. Optionally applies pharmacokinetic timing correction (experiment 04+).
-5. Drops ``patient_id`` with ``skrub.DropCols`` so the vectoriser never
+5. Optionally adds upper-envelope features (experiment 05a+).
+6. Drops ``patient_id`` with ``skrub.DropCols`` so the vectoriser never
    sees it (patients in the test set are disjoint from train).
-6. Applies a ``TableVectorizer`` to encode categorical columns automatically.
-7. Fits a ``HistGradientBoostingRegressor``, which handles NaN natively —
-   no imputation step required given the high missingness in this dataset.
+7. Applies a ``TableVectorizer`` to encode categorical columns automatically.
+8. Fits a ``HistGradientBoostingRegressor`` (optionally tuned, experiment 05b).
+9. Optionally wraps the pipeline in ``PatientSmoothedRegressor`` (experiment 05c).
 """
 
 from __future__ import annotations
@@ -31,6 +32,9 @@ def build_learner(
     drop_cols: tuple[str, ...] = (),
     patient_features: bool = False,
     drug_timing: bool = False,
+    envelope: bool = False,
+    hgb_params: dict | None = None,
+    smooth: bool = False,
 ):
     """Return the unfit learner (skrub SkrubLearner).
 
@@ -63,12 +67,38 @@ def build_learner(
         ``off_estime``, ``off_estime_moy_patient``, ``off_estime_tendance``,
         ``traite``, ``on_manquant``, ``off_manquant``, and
         ``part_traite_patient``.  Default ``False``.
+    envelope : bool, optional
+        When ``True``, insert :class:`parkinson.envelope.UpperEnvelope` after
+        ``DrugTimingFeatures``.  Requires ``drug_timing=True`` (uses
+        ``off_estime`` and ``on_corrige``).  Raises ``ValueError`` otherwise.
+        Default ``False``.
+    hgb_params : dict or None, optional
+        Extra keyword arguments forwarded to
+        ``HistGradientBoostingRegressor``.  Use
+        ``dict(max_iter=1000, learning_rate=0.03, early_stopping=False,
+        l2_regularization=1.0)`` for the tuned 05b configuration.
+        Default ``None`` (keeps ``random_state=0`` only).
+    smooth : bool, optional
+        When ``True``, wrap the whole sklearn pipeline in
+        :class:`parkinson.smoothing.PatientSmoothedRegressor` so that
+        per-patient predictions are smoothed with a degree-2 polynomial.
+        Default ``False``.
 
     Returns
     -------
     skrub.SkrubLearner
         Unfit learner ready to be passed to ``skore.evaluate``.
+
+    Raises
+    ------
+    ValueError
+        If ``envelope=True`` but ``drug_timing=False``.
     """
+    if envelope and not drug_timing:
+        raise ValueError(
+            "envelope=True requires drug_timing=True "
+            "(UpperEnvelope uses off_estime and on_corrige from DrugTimingFeatures)."
+        )
     if data_dir_preview is not None:
         data_dir = skrub.var("data_dir", value=str(data_dir_preview))
     else:
@@ -101,14 +131,26 @@ def build_learner(
 
         steps.append(DrugTimingFeatures())
 
-    if patient_features or drug_timing:
+    if envelope:
+        from parkinson.envelope import UpperEnvelope  # lazy import
+
+        steps.append(UpperEnvelope())
+
+    if patient_features or drug_timing or envelope:
         # Drop patient_id once all steps that need it have run.
         steps.append(skrub.DropCols(["patient_id"]))
 
     steps += [
         skrub.TableVectorizer(),
-        HistGradientBoostingRegressor(random_state=0),
+        HistGradientBoostingRegressor(random_state=0, **(hgb_params or {})),
     ]
 
-    predictions = X.skb.apply(make_pipeline(*steps), y=y)
+    model = make_pipeline(*steps)
+
+    if smooth:
+        from parkinson.smoothing import PatientSmoothedRegressor  # lazy import
+
+        model = PatientSmoothedRegressor(model)
+
+    predictions = X.skb.apply(model, y=y)
     return predictions.skb.make_learner()
