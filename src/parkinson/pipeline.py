@@ -4,8 +4,11 @@ Builds a skrub DataOps graph that:
 1. Loads the raw training data from a source-bound ``data_dir`` variable.
 2. Optionally drops columns before marking the feature matrix as X
    (keeping ``patient_id`` for grouped CV).
-3. Applies a ``TableVectorizer`` to encode categorical columns automatically.
-4. Fits a ``HistGradientBoostingRegressor``, which handles NaN natively —
+3. Optionally computes per-patient aggregate features (experiment 03+).
+4. Drops ``patient_id`` with ``skrub.DropCols`` so the vectoriser never
+   sees it (patients in the test set are disjoint from train).
+5. Applies a ``TableVectorizer`` to encode categorical columns automatically.
+6. Fits a ``HistGradientBoostingRegressor``, which handles NaN natively —
    no imputation step required given the high missingness in this dataset.
 """
 
@@ -17,6 +20,7 @@ import skrub
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.model_selection import GroupKFold
 from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import FunctionTransformer
 
 from parkinson.data import GROUP_COL, TARGET_COL, load_raw
 
@@ -24,6 +28,7 @@ from parkinson.data import GROUP_COL, TARGET_COL, load_raw
 def build_learner(
     data_dir_preview: str | Path | None = None,
     drop_cols: tuple[str, ...] = (),
+    patient_features: bool = False,
 ):
     """Return the unfit learner (skrub SkrubLearner).
 
@@ -39,6 +44,15 @@ def build_learner(
         Feature columns to drop before marking X. Default ``()`` preserves
         the full column set (01_baseline behaviour). Pass
         ``("off", "time_since_intake_off")`` for 02_no_off_feature.
+    patient_features : bool, optional
+        When ``True``, insert :func:`parkinson.features.add_patient_features`
+        at the head of the pipeline and drop ``patient_id`` with
+        ``skrub.DropCols`` before the vectoriser.  ``patient_id`` is kept in
+        X up to that point so the GroupKFold wiring still works.
+        Default ``False`` (01/02 baseline behaviour — note: ``patient_id`` is
+        still dropped by ``DropCols`` when this flag is ``True``; with
+        ``False`` the original behaviour is preserved and ``patient_id`` passes
+        through to ``TableVectorizer`` as before).
 
     Returns
     -------
@@ -53,8 +67,11 @@ def build_learner(
     # Layer 1: load raw data from the source-bound directory.
     data = data_dir.skb.apply_func(load_raw)
 
-    # Layer 2: mark X and y on the source frame (IID — no cross-row features).
-    # cv + split_kwargs together wire GroupKFold on patient_id at the marker.
+    # Layer 2: mark X and y.
+    # When patient_features=True, patient_id must remain in X so that
+    # add_patient_features can group by it; DropCols removes it later.
+    # When patient_features=False, we replicate the original behaviour:
+    # patient_id flows into TableVectorizer unchanged.
     feature_frame = data.drop(columns=[TARGET_COL, *drop_cols])
     X = feature_frame.skb.mark_as_X(
         cv=GroupKFold(n_splits=5),
@@ -62,12 +79,18 @@ def build_learner(
     )
     y = data[TARGET_COL].skb.mark_as_y()
 
-    # Layer 3: TableVectorizer encodes categoricals; HGBR handles NaN natively.
-    predictions = X.skb.apply(
-        make_pipeline(
-            skrub.TableVectorizer(),
-            HistGradientBoostingRegressor(random_state=0),
-        ),
-        y=y,
-    )
+    # Layer 3: build the sklearn pipeline steps.
+    steps = []
+    if patient_features:
+        from parkinson.features import add_patient_features  # lazy import
+
+        steps.append(FunctionTransformer(add_patient_features))
+        steps.append(skrub.DropCols(["patient_id"]))
+
+    steps += [
+        skrub.TableVectorizer(),
+        HistGradientBoostingRegressor(random_state=0),
+    ]
+
+    predictions = X.skb.apply(make_pipeline(*steps), y=y)
     return predictions.skb.make_learner()
