@@ -46,6 +46,20 @@ et qu'on lisse les prédictions par patient, le RMSE passe-t-il sous
     | + lissage final par patient | **3,52** |
 
     Même ordre de grandeur avec `GroupKFold(5, shuffle=True, random_state=1)`.
+  - **Validation croisée imbriquée** (pour que le choix des réglages ne
+    biaise pas le score) : `GroupKFold(5)` externe. Dans chaque fold
+    externe, le choix entre HGBR par défaut ou réglé et le poids du
+    lissage (0 / 0,5 / 1) se fait par un `GroupKFold(3)` interne sur les
+    seuls patients d'entraînement. Le modèle choisi est ensuite évalué
+    sur les patients du fold externe, qui n'ont servi à aucun choix.
+
+    | | RMSE par fold | moyenne ± écart-type |
+    |---|---|---|
+    | CV imbriquée (réglé + lissage 1,0 choisi dans les 5 folds) | 3,543 · 3,537 · 3,390 · 3,488 · 3,643 | **3,520 ± 0,082** |
+    | Sans aucun réglage (HGBR par défaut, sans lissage) | – | 3,706 ± 0,068 |
+
+    Le score imbriqué est identique au score simple (3,52). Le choix des
+    réglages n'a donc pas gonflé le résultat.
 - **Why this matters:** d'autres groupes annoncent environ 3,6. C'est
   la première piste qui s'attaque à la cause principale de l'erreur
   restante, au lieu d'ajouter des features à la marge.
@@ -92,8 +106,8 @@ où `col` n'est pas manquant (âges `a`, valeurs `v`) :
 |---|---|---|
 | `{col}_max_patient` | `max(v)` | ≥ 1 mesure |
 | `{col}_q50`, `_q75`, `_q90` | droite `base = polyfit(a, v, 1)`, résidus `r = v - base(a)`. Valeur = `base(age) + quantile(r, q)` à l'âge de chaque visite | ≥ 2 mesures, ≥ 2 âges distincts |
-| `{col}_enveloppe` | partir de `base`, puis 2 fois : garder les points dont le résidu est ≥ à la médiane des résidus et réajuster la droite dessus. Évaluer à l'âge de chaque visite | idem, et ≥ 2 points gardés |
-| `{col}_env2` | même principe avec une **parabole** (degré 2) | ≥ 6 mesures, ≥ 3 âges distincts parmi les points gardés |
+| `{col}_enveloppe` | partir de `base`, puis 2 fois : calculer les résidus par rapport à la droite **courante**, garder les points dont le résidu est ≥ à la médiane de ces résidus et réajuster la droite sur eux. Si les points gardés sont moins de 2 ou n'ont qu'un seul âge distinct, **garder la droite courante** (pas de NaN). Évaluer à l'âge de chaque visite | ≥ 2 mesures, ≥ 2 âges distincts |
+| `{col}_env2` | même principe avec une **parabole** : partir de `polyfit(a, v, 2)` sur toutes les mesures, 2 itérations, et garder la parabole courante si les points gardés sont moins de 4 ou ont moins de 3 âges distincts | ≥ 6 mesures |
 
 - Les valeurs sont calculées pour **toutes** les visites du patient,
   y compris celles où `col` manque. C'est justement l'intérêt.
@@ -139,8 +153,10 @@ X.skb.apply(model, y=y)
 
 **Étape 4 : tests.**
 - `tests/test_envelope.py` (petit DataFrame fabriqué à la main) :
-  - un patient avec `off` = 40, 25, 41, 30, 39 à des âges proches donne
-    `off_q90` > `off_q50` > moyenne, et `off_enveloppe` ≈ 40 ;
+  - un patient avec `off` = 40, 25, 41, 30, 39 aux âges 60,0 · 60,2 ·
+    60,4 · 60,6 · 60,8 donne `off_q90` > `off_q50` à chaque visite, et
+    `off_enveloppe` entre 38 et 42 à chaque visite (alors que la
+    moyenne vaut 35) ;
   - le nombre de lignes et l'index sont conservés ;
   - une visite sans `off` reçoit quand même les valeurs du patient ;
   - un patient avec une seule mesure a `off_max_patient` renseigné et le reste à NaN ;
@@ -164,8 +180,10 @@ Trois évaluations skore dans le même script, projet
 | `05c_smoothed` | idem 05b + `smooth=True` |
 
 **Étape 6 : exécuter, lire, noter.**
-- Relever le RMSE (moyenne ± écart-type) de 05a, 05b et 05c. On attend
-  environ 3,71, 3,58 et 3,52.
+- Relever le RMSE (moyenne ± écart-type) de 05a, 05b et 05c. Mesures
+  du prototype avec la même CV : 3,71, 3,58 et 3,52 (CV imbriquée :
+  3,520 ± 0,082). Un écart de plus de ≈ 0,1 signale une différence
+  d'implémentation à rechercher.
 - Remplir le Status et la ligne 05 de `JOURNAL.md`.
 - Transmettre la configuration 05c à la personne chargée de la
   soumission Kaggle.
@@ -176,9 +194,14 @@ soumission.
 
 ## Risks / things that could invalidate the result
 
-- **Hyperparamètres choisis sur la même CV (05b) :** le 3,58 est
-  légèrement optimiste. Viser plutôt 3,55–3,6. Ne pas multiplier les
-  essais de réglage sur cette CV sans garder un fold à part.
+- **Sélection des réglages :** vérifiée par CV imbriquée (3,520 ± 0,082,
+  voir Motivation). Ce contrôle couvre le choix entre les deux réglages
+  de HGBR et le poids du lissage. Il ne couvre **pas** la conception des
+  features d'enveloppe elles-mêmes (3 variantes essayées sur la CV
+  complète avant de retenir celle-ci). Ce biais résiduel n'est pas
+  mesuré. Seule la soumission Kaggle, sur des patients jamais vus,
+  le tranchera. Ne pas ajouter d'autres essais de réglage sur cette
+  CV sans refaire une CV imbriquée.
 - **Pas de fuite de target :** enveloppes et lissage n'utilisent que
   `off`, `on`, `ledd`, `age` et les prédictions. Refuser en revue toute
   statistique par patient calculée sur `target`.

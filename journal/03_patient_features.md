@@ -138,7 +138,9 @@ projet skore `parkinson-patient-features`, puis
 
 **Étape 5 : exécuter, lire, noter.**
 - Lancer le script et relever R² et RMSE (moyenne ± écart-type sur les 5 folds).
-- Comparer à 01 (avec la même CV) : on attend environ R² 0,93 / RMSE 4,4.
+- Comparer à 01 (avec la même CV). Mesure du prototype : R² 0,928,
+  RMSE 4,43 ± 0,07. Un écart de plus de ≈ 0,1 signale une différence
+  d'implémentation à rechercher.
 - Remplir le bloc Status ci-dessous et ajouter la ligne 03 dans
   `JOURNAL.md`.
 - Prévenir la personne de la 04 que la branche est fusionnée.

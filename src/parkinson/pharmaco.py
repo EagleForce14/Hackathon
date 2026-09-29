@@ -138,9 +138,10 @@ class DrugTimingFeatures(TransformerMixin, BaseEstimator):
             bins=self.bins_,
             include_lowest=True,
         )
-        ratio_attendu = bins_cut.map(self.curve_)
+        # map() on a categorical keeps the categorical dtype → cast to float.
+        ratio_attendu = bins_cut.map(self.curve_).astype(float)
         # Missing delay or out-of-range → use plateau.
-        ratio_attendu = ratio_attendu.where(ratio_attendu.notna(), other=self.plateau_)
+        ratio_attendu = ratio_attendu.fillna(self.plateau_)
         df["ratio_attendu"] = ratio_attendu.values
 
         # --- on_corrige ----------------------------------------------
