@@ -5,10 +5,11 @@ Builds a skrub DataOps graph that:
 2. Optionally drops columns before marking the feature matrix as X
    (keeping ``patient_id`` for grouped CV).
 3. Optionally computes per-patient aggregate features (experiment 03+).
-4. Drops ``patient_id`` with ``skrub.DropCols`` so the vectoriser never
+4. Optionally applies pharmacokinetic timing correction (experiment 04+).
+5. Drops ``patient_id`` with ``skrub.DropCols`` so the vectoriser never
    sees it (patients in the test set are disjoint from train).
-5. Applies a ``TableVectorizer`` to encode categorical columns automatically.
-6. Fits a ``HistGradientBoostingRegressor``, which handles NaN natively —
+6. Applies a ``TableVectorizer`` to encode categorical columns automatically.
+7. Fits a ``HistGradientBoostingRegressor``, which handles NaN natively —
    no imputation step required given the high missingness in this dataset.
 """
 
@@ -29,6 +30,7 @@ def build_learner(
     data_dir_preview: str | Path | None = None,
     drop_cols: tuple[str, ...] = (),
     patient_features: bool = False,
+    drug_timing: bool = False,
 ):
     """Return the unfit learner (skrub SkrubLearner).
 
@@ -53,6 +55,14 @@ def build_learner(
         still dropped by ``DropCols`` when this flag is ``True``; with
         ``False`` the original behaviour is preserved and ``patient_id`` passes
         through to ``TableVectorizer`` as before).
+    drug_timing : bool, optional
+        When ``True``, insert :class:`parkinson.pharmaco.DrugTimingFeatures`
+        after the patient-features step (requires ``patient_features=True``
+        for the full 04 setup, but works independently).  Learns an on/off
+        ratio curve from the training fold and adds ``on_corrige``,
+        ``off_estime``, ``off_estime_moy_patient``, ``off_estime_tendance``,
+        ``traite``, ``on_manquant``, ``off_manquant``, and
+        ``part_traite_patient``.  Default ``False``.
 
     Returns
     -------
@@ -85,6 +95,14 @@ def build_learner(
         from parkinson.features import add_patient_features  # lazy import
 
         steps.append(FunctionTransformer(add_patient_features))
+
+    if drug_timing:
+        from parkinson.pharmaco import DrugTimingFeatures  # lazy import
+
+        steps.append(DrugTimingFeatures())
+
+    if patient_features or drug_timing:
+        # Drop patient_id once all steps that need it have run.
         steps.append(skrub.DropCols(["patient_id"]))
 
     steps += [
